@@ -1,0 +1,203 @@
+"""
+Joaquin Matres joamatab@gmail.com
+
+May 2013
+"""
+
+from pylab import *
+from camfr import *
+
+W = 6.0
+L = 46
+offset = 1.03
+
+w = 0.5
+w1 = 0.5
+w2 = 2.0
+h = 0.220
+Ltaper = 60.0
+nmodes = 50
+
+set_lambda(1.55)
+set_N(nmodes)
+set_polarisation(TE)
+
+
+# Materials
+Si = 3.43
+SiO2 = 1.46
+#Si = sqrt(10.6684293*wav**2/(wav**2-0.301516485**2)+0.003043475*wav**2/(wav**2-1.13475115**2)+1.54133408*wav**2/(wav**2-1104.0**2)+1)
+#SiO2 = 1.4639-0.0173*wav+0.0055*wav**2-0.0016*wav**3
+#Air=1.0
+
+
+# Sub. spec
+SOI = 0.22 # SOI thickness (um)
+BOX = 3.0 # BOX thickness (um)
+CLAD = 2.0
+y_range = 2*W
+
+
+sub = Material(Si) # substrate
+box = Material(SiO2) # BOX
+soi = Material(Si) # SOI
+clad = Material(SiO2) # Over clad
+
+
+# Effective index (y-direction)
+verticalSlab = Slab(box(BOX)+soi(SOI)+clad(CLAD))
+verticalSlab.calc()
+n_ridge=verticalSlab.mode(0).n_eff() # Ridge index
+print "verticalSlab index=", abs(n_ridge)
+
+
+
+#Effective index of WG (xy-plane)
+set_polarisation(TM) # TE in 3D is equivalent to TM in 2D
+WGcore = Material(n_ridge)
+WGclad = Material(SiO2)
+
+WGin=Slab(WGclad(y_range/2-w1/2)+WGcore(w1)+WGclad(y_range/2-w1/2))
+WGin.calc()
+#
+neff_in=WGin.mode(0).n_eff() # Effective index of WG
+print "Effective index of input WG=", abs(neff_in)
+
+
+# Perfectly matched layer
+pml=0.4
+set_lower_PML(-pml)
+set_upper_PML(-pml)
+
+
+g=Geometry(clad) # Background
+Lin = 60.0
+dx=0.005 # Step in x
+dy=0.005 # Step in z
+
+
+
+
+L = 41.5
+P0PIratio = []
+Rrange = []
+Trange = []
+
+#offsetRange=linspace(0.91,1.10,10)
+
+offset = 1.03
+
+g+=Rectangle(Point(0.0, y_range/2 -offset-w/2.), Point(Lin, y_range/2 -offset + w/2.), WGcore) # Input waveguide
+g+=Rectangle(Point(Lin, y_range/2 - W/2), Point(Lin+L, y_range/2 + W/2), WGcore) # MMI region
+g+=Rectangle(Point(L+Lin,y_range/2 -offset-w/2.), Point(L+2*Lin, y_range/2 - offset + w/2.), WGcore) # Output waveguide 1
+g+=Rectangle(Point(L+Lin,y_range/2 +offset-w/2.), Point(L+2*Lin, y_range/2 + offset + w/2.), WGcore) # Output waveguide 2
+
+## Calc.
+design=g.to_expression(0.0, L+2*Lin, dx, 0, y_range, dy)
+camfr_stack=Stack(design)
+
+
+inc = zeros(N())
+inc[0] = 1
+camfr_stack.set_inc_field(inc)
+
+camfr_stack.calc()
+#camfr_stack.plot()
+beta = camfr_stack.inc().mode(0).kz()
+
+#extract the field at the input and output position
+#y_positions = numpy.arange(0,10,0.01)
+y_positions = arange(0, y_range, dy)
+IH2= zeros(len(y_positions), dtype=complex)
+OH2= zeros(len(y_positions), dtype=complex)
+OH2mmi= zeros(len(y_positions), dtype=complex)
+
+print "Now extracting the fields..."
+
+i=0
+for y_pos in y_positions:
+    coord_input = Coord(y_pos, 0.0 , 0.0)
+    coord_mmiOutput = Coord(y_pos, 0.0, L+Lin)
+    coord_output = Coord(y_pos, 0.0, L+2*Lin)
+    field_input = camfr_stack.field(coord_input)
+    field_output = camfr_stack.field(coord_output)
+    coord_mmiOutput = Coord(y_pos, 0.0, L+Lin)
+    field_mmiOutput = camfr_stack.field(coord_mmiOutput)
+    IH2[i] = field_input.H2()
+    OH2[i] = field_output.H2()
+    OH2mmi[i] = field_mmiOutput.H2()
+    
+    i=i+1
+    
+    
+#we need the absolute value, not the complex number
+IH2 = abs(IH2)
+OH2 = abs(OH2)
+
+#normalize
+IH2_max = max(IH2)
+IH2 = IH2 / IH2_max
+OH2 = OH2 / IH2_max
+OH2mmi = abs(OH2mmi)/IH2_max
+
+
+
+#plot
+print"Now plotting..."
+
+
+
+figure(5)
+title('integral over $E^2$ input/output')
+plot(y_positions, IH2, 'k')
+plot(y_positions, OH2, 'y')
+plot(y_positions, OH2mmi, 'b')
+
+#savefig('mmiOutField.eps')
+#show()
+
+from scipy.integrate import trapz
+PI = trapz(square(IH2))
+PO= trapz(square(OH2))
+
+print "Integral over H2 square at input : ", PI
+print "Integral over H2 square at output : ", PO
+print PO / PI * 100.0,"%"
+
+P0PIratio.append(PO / PI )
+
+
+
+guided=0
+niguided=1.46
+for t in range(0,nmodes):
+    if abs(WGin.mode(t).n_eff().imag)<niguided:
+        guided=t
+        niguided=abs(WGin.mode(t).n_eff().imag)
+
+
+camfr_stack.plot()
+
+# Reflection and transmission coefficients
+R=abs(camfr_stack.R12(guided,guided))
+T=abs(camfr_stack.T12(guided,guided))
+
+print "Reflection coefficient=", R*R
+print "Transmission coefficient=", T*T
+
+Rrange.append(R*R)
+Trange.append(T*T)
+
+figure()
+#plot(offsetRange,P0PIratio,'.')
+#ylabel('P0PIratio')
+#figure()
+#plot(offsetRange,Trange,'.')
+#ylabel('T')
+#figure()
+#plot(offsetRange,Rrange,'.')
+#ylabel('R')
+
+
+
+show()
